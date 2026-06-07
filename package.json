@@ -1,0 +1,15 @@
+{
+  "name": "whatsapp-task-extractor-root",
+  "version": "1.0.0",
+  "description": "WhatsApp Task and Info Extractor to Google Workspace",
+  "scripts": {
+    "install-all": "npm install --prefix backend && npm install --prefix frontend",
+    "backend": "npm start --prefix backend",
+    "backend:dev": "npm run dev --prefix backend",
+    "frontend": "npm run dev --prefix frontend",
+    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
