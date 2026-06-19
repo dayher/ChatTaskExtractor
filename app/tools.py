@@ -383,6 +383,37 @@ def download_and_parse_chat_range(
     if os.path.exists(zip_path):
         os.remove(zip_path)
 
+    # --- Local Speech-to-Text Transcription for Audio Notes ---
+    transcribed_count = 0
+    whisper_model = None
+
+    for msg in messages:
+        att = msg.get("attachment")
+        if att:
+            ext = os.path.splitext(att)[1].lower()
+            if ext in [".opus", ".wav", ".mp3", ".m4a", ".ogg"]:
+                audio_path = os.path.join(temp_dir, att)
+                if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                    print(f"🎤 Transcribiendo nota de voz local con Whisper: '{att}'")
+                    try:
+                        if whisper_model is None:
+                            import whisper
+                            # Load the tiny model (lightweight, runs fast locally on CPU/GPU)
+                            whisper_model = whisper.load_model("tiny")
+                        
+                        result = whisper_model.transcribe(audio_path, language="es")
+                        transcription = result.get("text", "").strip()
+                        if transcription:
+                            # Append the local transcription to the message text
+                            msg["text"] = f"{msg['text']} [Nota de voz transcrita localmente: {transcription}]"
+                            transcribed_count += 1
+                            print(f"✅ Transcripción: '{transcription}'")
+                    except Exception as e:
+                        print(f"⚠️ Error al transcribir nota de voz {att}: {e}")
+
+    if transcribed_count > 0:
+        print(f"🎉 Se transcribieron {transcribed_count} notas de voz localmente.")
+
     # Gather list of files in directory
     available_files = os.listdir(temp_dir)
 
