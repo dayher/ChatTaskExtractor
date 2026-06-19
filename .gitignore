@@ -1,0 +1,22 @@
+# Dependency directories
+node_modules/
+
+# Credentials and Keys (Private data)
+.env
+*.env
+tokens.json
+credentials.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and Cache files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+/tmp/
+uploads/
