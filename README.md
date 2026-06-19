@@ -1,92 +1,124 @@
-# Extractor de Tareas e Información de WhatsApp a Google Workspace
+# WhatsApp Workspace Sync Agent (ADK Python SDK)
 
-Esta es una aplicación web local que analiza la conversación exportada de un grupo de WhatsApp (en formato `.zip`), extrae automáticamente tareas accionables en **Google Tasks**, e inserta información relevante (procedimientos, notas técnicas, resúmenes, etc.) junto con imágenes y transcripciones de audios de voz en un documento de **Google Docs**.
+Este proyecto refactoriza el extractor de tareas de WhatsApp al framework oficial **Google Agent Development Kit (ADK) Python SDK**. Transforma una secuencia estructurada de llamadas en un **Agente de Razonamiento Autónomo** que utiliza `gemini-2.5-flash` para leer, comprender, filtrar y clasificar la información y tareas de tu equipo.
 
-## Características principales
+## Características de la versión 2.0 (Basada en Agentes)
 
-- 📂 **Lector ZIP**: Extrae el chat y sus archivos multimedia de forma transparente.
-- 🤖 **Gemini AI**: Clasifica los hilos de conversación de forma inteligente, descartando charlas triviales (saludos, emojis, pláticas informales).
-- 🎤 **Transcripción de Voz**: Usa la capacidad multimodal de Gemini para transcribir notas de voz de WhatsApp y guardarlas en el documento de Google.
-- 🖼️ **Análisis y Carga de Imágenes**: Sube las imágenes compartidas en el chat a Google Drive y las inserta directamente en el documento con una descripción de su contenido.
-- 📋 **Google Tasks**: Crea tareas automáticas con título, contexto y fecha de vencimiento (si se menciona en la plática).
-- 📈 **Log en Tiempo Real**: Muestra el progreso detallado de la extracción mediante transmisión SSE en una interfaz de usuario fluida y moderna.
-
----
-
-## Requisitos Previos y Configuración
-
-### 1. Configuración de Google Cloud (OAuth 2.0)
-
-Para permitir que la aplicación acceda a tus cuentas de Google Tasks y Google Docs, necesitas crear credenciales OAuth 2.0 en Google Cloud Console:
-
-1. Ve a [Google Cloud Console](https://console.cloud.google.com/).
-2. Crea un nuevo proyecto (ej. `WhatsApp Extractor`).
-3. Ve a **APIs y Servicios** > **Biblioteca** y habilita las siguientes APIs:
-   - **Google Tasks API**
-   - **Google Docs API**
-   - **Google Drive API**
-4. Ve a **APIs y Servicios** > **Pantalla de consentimiento de OAuth**:
-   - Selecciona **Externo** (User Type) y presiona Crear.
-   - Completa la información básica (Nombre de aplicación, correo).
-   - En **Permisos (Scopes)**, añade o busca los siguientes alcances:
-     - `.../auth/tasks` (Google Tasks API - Ver y gestionar tus tareas)
-     - `.../auth/documents` (Google Docs API - Crear y editar documentos)
-     - `.../auth/drive.file` (Google Drive API - Subir archivos multimedia del chat)
-   - En **Usuarios de prueba (Test users)**, añade tu propia dirección de correo de Google (con la que iniciarás sesión en la aplicación).
-5. Ve a **APIs y Servicios** > **Credenciales**:
-   - Haz clic en **Crear credenciales** > **ID de cliente de OAuth**.
-   - Tipo de aplicación: **Aplicación web**.
-   - Nombre: `WhatsApp Extractor Local`.
-   - En **Orígenes de JavaScript autorizados**, añade:
-     - `http://localhost:5173`
-   - En **URIs de redireccionamiento autorizados**, añade:
-     - `http://localhost:3001/api/auth/callback`
-   - Haz clic en **Crear**.
-6. Copia el **ID de cliente** y el **Secreto de cliente** generados.
+- **Optimización de Lectura Inversa (Reverse Parsing)**: Lee el archivo `_chat.txt` de WhatsApp de atrás hacia adelante. Se detiene de inmediato al rebasar el límite cronológico del último procesamiento (`FROM_DATE`), evitando consumir tokens innecesarios.
+- **Detección Automática de Rango (Stateless Date Tracking)**: Compara los últimos dos archivos ZIP guardados en Drive (en la carpeta principal y en `"Archived"`). El penúltimo ZIP provee el límite `FROM_DATE` y el último provee el `TO_DATE` para filtrar los chats.
+- **Aislamiento de Emisor**: Filtra la conversación para extraer únicamente las tareas e información generada por el `SENDER_OF_INTEREST` (ej. "Dayher").
+- **Conversión de Multimedia**: Transcribe notas de voz (.opus, .wav, etc.) y describe capturas/imágenes usando el modelo multimodal Gemini.
+- **Creación en Google Workspace**:
+  - Crea listas de tareas con fechas límites correspondientes en **Google Tasks**.
+  - Crea un reporte ejecutivo formateado en **Google Docs**, subiendo los archivos multimedia asociados a una carpeta de Drive e insertando las imágenes y transcripciones directamente en el documento.
 
 ---
 
-### 2. Configurar Variables de Entorno
+## Estructura del Proyecto
 
-En el directorio del backend (`/Users/dayher/Applications/whatsapp-task-extractor/backend`), crea un archivo llamado `.env` y copia los valores correspondientes:
-
-```env
-# Servidor
-PORT=3001
-FRONTEND_URL=http://localhost:5173
-
-# Credenciales de Google
-GOOGLE_CLIENT_ID=tu_id_de_cliente_aqui.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=tu_secreto_de_cliente_aqui
-GOOGLE_REDIRECT_URI=http://localhost:3001/api/auth/callback
+```
+whatsapp-adk-agent/
+├── pyproject.toml              # Manifiesto de dependencias Python
+├── .env                        # Configuración local (API Keys, etc.) (Ignorado en git)
+├── .env.example                # Plantilla de variables de entorno
+├── tokens.json                 # Credenciales Oauth2 autorizadas (Ignorado en git)
+├── authorize.py                # Script CLI para autorizar Google OAuth
+├── run.py                      # Script CLI para probar el agente localmente
+├── google_apps_script.js       # Código del trigger para Google Apps Script
+├── app/
+│   ├── __init__.py
+│   ├── agent.py                # Definición del Agente ADK y sus instrucciones de sistema
+│   ├── tools.py                # Herramientas del agente (Drive, Tasks, Docs, transcriptor)
+│   ├── auth.py                 # Cargador y refrescador automático de tokens de Google Workspace
+│   └── fast_api_app.py         # Servidor FastAPI que expone el endpoint del webhook
 ```
 
 ---
 
-## Cómo Ejecutar la Aplicación
+## Guía de Configuración
 
-1. Asegúrate de estar en el directorio raíz del proyecto:
-   `cd /Users/dayher/Applications/whatsapp-task-extractor`
+### 1. Requisitos Previos
 
-2. Instala todas las dependencias del proyecto ejecutando:
-   `npm run install-all` (Nota: esto ya se ha realizado durante la inicialización).
+Asegúrate de tener instalado `uv` en tu sistema Mac para gestionar el entorno virtual de Python rápidamente.
 
-3. Inicia la aplicación (servidor de backend y frontend de Vite ejecutándose de forma simultánea):
-   `npm run dev`
+### 2. Variables de Entorno
 
-4. Abre tu navegador en la dirección indicada por Vite:
-   `http://localhost:5173`
+Copia el archivo `.env.example` a `.env` y rellena las variables correspondientes:
+
+```bash
+cp .env.example .env
+```
+
+- **`GEMINI_API_KEY`**: Obtén tu clave en [Google AI Studio](https://aistudio.google.com/).
+- **`SENDER_OF_INTEREST`**: Nombre del contacto de WhatsApp cuyas tareas y mensajes deseas procesar (ej: `Dayher`).
+- **`GOOGLE_CLIENT_ID`** y **`GOOGLE_CLIENT_SECRET`**: Credenciales Oauth2 de tu proyecto en Google Cloud Console.
+
+### 3. Autenticación con Google Workspace
+
+Coloca tu archivo `client_secret_*.json` (descargado de Google Cloud Console) en la raíz del proyecto o en el directorio superior (`/Users/dayher/Applications/`).
+
+Ejecuta el script de autorización:
+
+```bash
+uv run authorize.py
+```
+
+Esto levantará un servidor local en el puerto `3001` y abrirá tu navegador para completar la pantalla de consentimiento de Google. Tras dar los permisos de Tasks, Drive y Docs, guardará el archivo `tokens.json` en la raíz.
 
 ---
 
-## Cómo Usar la Aplicación
+## Cómo Ejecutar y Probar
 
-1. **API Key de Gemini**: Consigue una API Key gratuita o de pago en [Google AI Studio](https://aistudio.google.com/) e introdúcela en el primer campo de la aplicación.
-2. **Autorización Google**: Presiona el botón "Autorizar Google Workspace" e inicia sesión con el correo que configuraste en Google Cloud.
-3. **Lista de Tareas**: Selecciona si deseas crear una lista de tareas nueva específica para esta conversación o añadir las tareas a una lista preexistente.
-4. **Archivo ZIP**: Exporta el chat de tu grupo de WhatsApp desde la aplicación móvil:
-   - *Android*: Entra al chat > Ajustes (tres puntos) > Más > **Exportar chat** > **Incluir archivos multimedia**.
-   - *iOS*: Entra al chat > Toca el nombre del grupo > **Exportar chat** > **Adjuntar archivos**.
-   - Transfiere el archivo `.zip` resultante a tu ordenador.
-5. **Carga e Inicia**: Arrastra el archivo `.zip` al área de carga y haz clic en **Comenzar Extracción**.
-6. **Resultados**: Observa en tiempo real el registro de logs. Al finalizar, podrás abrir directamente el documento creado en Google Docs y ver las tareas añadidas a tu Google Tasks.
+### Prueba Local (CLI)
+
+Puedes simular una ejecución completa en local con el ID de un archivo ZIP de WhatsApp que tengas en tu Drive:
+
+```bash
+uv run run.py <FILE_ID_DE_DRIVE> [NOMBRE_OPCIONAL.zip]
+```
+
+El agente:
+1. Consultará Drive para calcular el intervalo de fechas.
+2. Descargará y parseará en reversa el chat filtrando tu emisor.
+3. Transcribirá audios/imágenes si se mencionan.
+4. Creará la lista en Google Tasks.
+5. Generará el Google Doc.
+6. Archivará el ZIP.
+
+---
+
+### Servidor Web (Webhook para Apps Script)
+
+Inicia el servidor FastAPI localmente:
+
+```bash
+uv run python app/fast_api_app.py
+```
+
+El servidor escuchará en el puerto `8000`.
+
+#### Exponer el Webhook con ngrok
+
+Para permitir que Google Apps Script acceda a tu servidor local, exponlo mediante ngrok:
+
+```bash
+ngrok http 8000
+```
+
+Copia la URL HTTPS generada (ej. `https://1234-56-78.ngrok-free.app`) y úsala para configurar la URL del webhook en Apps Script.
+
+---
+
+### Configuración del Trigger de Google Apps Script
+
+1. Abre [Google Apps Script](https://script.google.com/).
+2. Crea un proyecto y pega el contenido del archivo `google_apps_script.js`.
+3. Configura las variables:
+   - `FOLDER_ID`: El ID de la carpeta en Google Drive donde subes tus ZIPs exportados de WhatsApp.
+   - `WEBHOOK_URL`: `https://TU_URL_DE_NGROK.ngrok-free.app/api/agent-trigger`.
+4. Ve a **Activadores** (icono de reloj) -> **Añadir activador**:
+   - Elige ejecutar: `processWhatsAppFolder`
+   - Origen del evento: `Según tiempo`
+   - Tipo de activador: `Temporizador de horas`
+   - Intervalo de horas: `Cada 6 horas`
+5. Guarda y concede los permisos requeridos.
