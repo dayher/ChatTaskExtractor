@@ -194,8 +194,8 @@ def parse_chat_text_reverse(
 def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
     """
     Checks Google Drive parent folder and its 'Archived' subfolder to find ZIP exports.
-    Sorts them by modification date to resolve FROM_DATE (second to last ZIP modification date)
-    and TO_DATE (last ZIP modification date).
+    Retrieves the last execution date from Google Sheets to define FROM_DATE.
+    If no sheet exists, falls back to sorting ZIP exports by modification date.
 
     Args:
         file_id: The ID of the ZIP file currently being processed.
@@ -215,7 +215,6 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
         )
     except Exception as e:
         print(f"❌ Error al consultar Drive para el archivo {file_id}: {e}")
-        # Fallback default
         to_dt = datetime.now()
         from_dt = to_dt - timedelta(days=30)
         return {
@@ -236,41 +235,48 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
 
     parent_id = parents[0]
 
-    # List ZIP files in parent folder
-    q_parent = (
-        f"mimeType='application/zip' and '{parent_id}' in parents and trashed=false"
-    )
-    results_parent = (
-        drive_service.files()
-        .list(q=q_parent, fields="files(id, name, modifiedTime)")
-        .execute()
-    )
-    zip_files = results_parent.get("files", [])
+    # Resolve TO_DATE from current ZIP modification date
+    to_dt_str = file_metadata.get("modifiedTime", "").split(".")[0].replace("Z", "")
+    to_date = datetime.strptime(to_dt_str, "%Y-%m-%dT%H:%M:%S")
 
-    # Check 'Archived' subfolder
-    q_archive_dir = f"mimeType='application/vnd.google-apps.folder' and name='Archived' and '{parent_id}' in parents and trashed=false"
-    results_archive_dir = (
-        drive_service.files().list(q=q_archive_dir, fields="files(id)").execute()
-    )
-    archive_folders = results_archive_dir.get("files", [])
-
-    if archive_folders:
-        archive_folder_id = archive_folders[0]["id"]
-        q_archive = f"mimeType='application/zip' and '{archive_folder_id}' in parents and trashed=false"
-        results_archive = (
+    # List ZIP files in parent folder and Archived folder to count them / use as fallback
+    zip_files = []
+    try:
+        q_parent = (
+            f"mimeType='application/zip' and '{parent_id}' in parents and trashed=false"
+        )
+        results_parent = (
             drive_service.files()
-            .list(q=q_archive, fields="files(id, name, modifiedTime)")
+            .list(q=q_parent, fields="files(id, name, modifiedTime)")
             .execute()
         )
-        zip_files.extend(results_archive.get("files", []))
+        zip_files.extend(results_parent.get("files", []))
 
-    # De-duplicate
+        # Check 'Archived' subfolder
+        q_archive_dir = f"mimeType='application/vnd.google-apps.folder' and name='Archived' and '{parent_id}' in parents and trashed=false"
+        results_archive_dir = (
+            drive_service.files().list(q=q_archive_dir, fields="files(id)").execute()
+        )
+        archive_folders = results_archive_dir.get("files", [])
+
+        if archive_folders:
+            archive_folder_id = archive_folders[0]["id"]
+            q_archive = f"mimeType='application/zip' and '{archive_folder_id}' in parents and trashed=false"
+            results_archive = (
+                drive_service.files()
+                .list(q=q_archive, fields="files(id, name, modifiedTime)")
+                .execute()
+            )
+            zip_files.extend(results_archive.get("files", []))
+    except Exception as e:
+        print(f"⚠️ Error al listar archivos ZIP de fallback: {e}")
+
+    # De-duplicate ZIP files
     unique_zips = {}
     for z in zip_files:
         unique_zips[z["id"]] = z
     zip_files = list(unique_zips.values())
 
-    # Parse dates
     for z in zip_files:
         dt = datetime.strptime(
             z["modifiedTime"].split(".")[0].replace("Z", ""), "%Y-%m-%dT%H:%M:%S"
@@ -279,20 +285,52 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
 
     zip_files.sort(key=lambda x: x["parsed_time"])
 
-    if len(zip_files) >= 2:
-        current_index = next(
-            (i for i, z in enumerate(zip_files) if z["id"] == file_id),
-            len(zip_files) - 1,
+    # 1. Search in Google Sheets for the last execution date
+    from_date = None
+    try:
+        sheet_query = (
+            f"name='WhatsApp Agent - Registro de Ejecuciones' and "
+            f"mimeType='application/vnd.google-apps.spreadsheet' and "
+            f"'{parent_id}' in parents and trashed=false"
         )
-        if current_index > 0:
-            prev_zip = zip_files[current_index - 1]
-            from_date = prev_zip["parsed_time"]
+        sheet_results = drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        sheet_files = sheet_results.get("files", [])
+        
+        if sheet_files:
+            sheet_id = sheet_files[0]["id"]
+            print(f"📊 Encontrada hoja de cálculo de registro: {sheet_id}")
+            sheets_service = build("sheets", "v4", credentials=creds)
+            # Leer columna C: "Hasta Fecha"
+            result = sheets_service.spreadsheets().values().get(
+                spreadsheetId=sheet_id,
+                range="Sheet1!C:C"
+            ).execute()
+            values = result.get("values", [])
+            if len(values) > 1:
+                # Obtener el valor de la última fila (excluyendo cabecera)
+                last_hasta_fecha_str = values[-1][0].strip()
+                from_date = datetime.strptime(last_hasta_fecha_str, "%Y-%m-%d")
+                print(f"📅 Fecha FROM_DATE recuperada del registro: {last_hasta_fecha_str}")
         else:
-            from_date = zip_files[current_index]["parsed_time"] - timedelta(days=30)
-        to_date = zip_files[current_index]["parsed_time"]
-    else:
-        to_date = datetime.now()
-        from_date = to_date - timedelta(days=30)
+            print("📊 No se encontró hoja de cálculo de registro en Drive.")
+    except Exception as e:
+        print(f"⚠️ Error al consultar el registro en Google Sheets: {e}")
+
+    # 2. Fallback to modified times of ZIP files if no sheet or no date found
+    if from_date is None:
+        print("ℹ️ Usando lógica de fallback basada en fechas de modificación de los archivos ZIP...")
+        if len(zip_files) >= 2:
+            current_index = next(
+                (i for i, z in enumerate(zip_files) if z["id"] == file_id),
+                len(zip_files) - 1,
+            )
+            if current_index > 0:
+                prev_zip = zip_files[current_index - 1]
+                from_date = prev_zip["parsed_time"]
+            else:
+                from_date = zip_files[current_index]["parsed_time"] - timedelta(days=30)
+        else:
+            from_date = to_date - timedelta(days=30)
 
     # Save resolved dates in session state
     from_date_str = from_date.strftime("%Y-%m-%d")
@@ -300,7 +338,7 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
     tool_context.state["from_date"] = from_date_str
     tool_context.state["to_date"] = to_date_str
 
-    print(f"✅ Fechas encontradas - FROM_DATE: {from_date_str}, TO_DATE: {to_date_str}")
+    print(f"✅ Fechas resueltas - FROM_DATE: {from_date_str}, TO_DATE: {to_date_str}")
     return {
         "from_date": from_date_str,
         "to_date": to_date_str,
@@ -807,3 +845,138 @@ def archive_chat_file(file_id: str, tool_context: ToolContext) -> str:
     ).execute()
 
     return f"Archivo ZIP '{file.get('name')}' archivado correctamente."
+
+
+def log_execution_to_spreadsheet(
+    file_id: str,
+    total_messages: int,
+    voice_notes_count: int,
+    tasks_count: int,
+    info_count: int,
+    tool_context: ToolContext,
+) -> dict:
+    """
+    Logs the execution statistics to the Google Sheet registry.
+    Creates the Google Sheet if it does not exist in the parent folder.
+
+    Args:
+        file_id: The ID of the ZIP file processed.
+        total_messages: The total number of messages processed.
+        voice_notes_count: The number of voice notes transcribed.
+        tasks_count: The number of tasks created.
+        info_count: The number of info notes created.
+
+    Returns:
+        A dictionary indicating success and the spreadsheet ID.
+    """
+    print(f"📊 Registrando ejecución en la hoja de cálculo para el archivo ID: {file_id}")
+    creds = get_google_credentials()
+    drive_service = build("drive", "v3", credentials=creds)
+    sheets_service = build("sheets", "v4", credentials=creds)
+
+    # 1. Get file metadata to find parent folder and name
+    try:
+        file_metadata = (
+            drive_service.files()
+            .get(fileId=file_id, fields="parents, name")
+            .execute()
+        )
+    except Exception as e:
+        print(f"❌ Error al consultar Drive para el archivo {file_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+    parents = file_metadata.get("parents") or []
+    if not parents:
+        return {"status": "error", "message": "No parent folder found."}
+    parent_id = parents[0]
+    zip_name = file_metadata.get("name", "Desconocido")
+
+    # 2. Search for the Google Sheet
+    sheet_id = None
+    try:
+        sheet_query = (
+            f"name='WhatsApp Agent - Registro de Ejecuciones' and "
+            f"mimeType='application/vnd.google-apps.spreadsheet' and "
+            f"'{parent_id}' in parents and trashed=false"
+        )
+        sheet_results = drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        sheet_files = sheet_results.get("files", [])
+        if sheet_files:
+            sheet_id = sheet_files[0]["id"]
+    except Exception as e:
+        print(f"⚠️ Error al buscar la hoja de cálculo: {e}")
+
+    # 3. Create the Google Sheet if it does not exist
+    if not sheet_id:
+        try:
+            body = {
+                "name": "WhatsApp Agent - Registro de Ejecuciones",
+                "mimeType": "application/vnd.google-apps.spreadsheet",
+                "parents": [parent_id],
+            }
+            sheet_file = drive_service.files().create(body=body, fields="id").execute()
+            sheet_id = sheet_file.get("id")
+            print(f"✅ Nueva hoja de cálculo de registro creada con ID: {sheet_id}")
+
+            # Initialize headers
+            headers = [
+                [
+                    "Fecha Ejecución",
+                    "Desde Fecha",
+                    "Hasta Fecha",
+                    "Archivo ZIP",
+                    "Mensajes Procesados",
+                    "Notas de Voz Transcritas",
+                    "Tareas Creadas",
+                    "Notas Informativas",
+                    "Enlace Google Doc",
+                ]
+            ]
+            sheets_service.spreadsheets().values().update(
+                spreadsheetId=sheet_id,
+                range="Sheet1!A1",
+                valueInputOption="USER_ENTERED",
+                body={"values": headers},
+            ).execute()
+        except Exception as e:
+            print(f"❌ Error al crear e inicializar la hoja de cálculo: {e}")
+            return {"status": "error", "message": str(e)}
+
+    # 4. Append execution data
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        from_date = tool_context.state.get("from_date", "")
+        to_date = tool_context.state.get("to_date", "")
+        doc_link = tool_context.state.get("doc_link", "")
+
+        row_data = [
+            [
+                now_str,
+                from_date,
+                to_date,
+                zip_name,
+                total_messages,
+                voice_notes_count,
+                tasks_count,
+                info_count,
+                doc_link,
+            ]
+        ]
+
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=sheet_id,
+            range="Sheet1!A1",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": row_data},
+        ).execute()
+        print(f"✅ Registro de ejecución añadido correctamente a la hoja: {sheet_id}")
+    except Exception as e:
+        print(f"❌ Error al añadir fila a la hoja de cálculo: {e}")
+        return {"status": "error", "message": str(e)}
+
+    return {
+        "status": "success",
+        "spreadsheet_id": sheet_id,
+        "spreadsheet_name": "WhatsApp Agent - Registro de Ejecuciones",
+    }
