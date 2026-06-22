@@ -293,24 +293,30 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
             f"mimeType='application/vnd.google-apps.spreadsheet' and "
             f"'{parent_id}' in parents and trashed=false"
         )
-        sheet_results = drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        sheet_results = (
+            drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        )
         sheet_files = sheet_results.get("files", [])
-        
+
         if sheet_files:
             sheet_id = sheet_files[0]["id"]
             print(f"📊 Encontrada hoja de cálculo de registro: {sheet_id}")
             sheets_service = build("sheets", "v4", credentials=creds)
             # Leer columna C: "Hasta Fecha"
-            result = sheets_service.spreadsheets().values().get(
-                spreadsheetId=sheet_id,
-                range="Sheet1!C:C"
-            ).execute()
+            result = (
+                sheets_service.spreadsheets()
+                .values()
+                .get(spreadsheetId=sheet_id, range="Sheet1!C:C")
+                .execute()
+            )
             values = result.get("values", [])
             if len(values) > 1:
                 # Obtener el valor de la última fila (excluyendo cabecera)
                 last_hasta_fecha_str = values[-1][0].strip()
                 from_date = datetime.strptime(last_hasta_fecha_str, "%Y-%m-%d")
-                print(f"📅 Fecha FROM_DATE recuperada del registro: {last_hasta_fecha_str}")
+                print(
+                    f"📅 Fecha FROM_DATE recuperada del registro: {last_hasta_fecha_str}"
+                )
         else:
             print("📊 No se encontró hoja de cálculo de registro en Drive.")
     except Exception as e:
@@ -318,7 +324,9 @@ def check_drive_and_get_dates(file_id: str, tool_context: ToolContext) -> dict:
 
     # 2. Fallback to modified times of ZIP files if no sheet or no date found
     if from_date is None:
-        print("ℹ️ Usando lógica de fallback basada en fechas de modificación de los archivos ZIP...")
+        print(
+            "[Info] Usando lógica de fallback basada en fechas de modificación de los archivos ZIP..."
+        )
         if len(zip_files) >= 2:
             current_index = next(
                 (i for i, z in enumerate(zip_files) if z["id"] == file_id),
@@ -436,14 +444,17 @@ def download_and_parse_chat_range(
                     try:
                         if whisper_model is None:
                             import whisper
+
                             # Load the tiny model (lightweight, runs fast locally on CPU/GPU)
                             whisper_model = whisper.load_model("tiny")
-                        
+
                         result = whisper_model.transcribe(audio_path, language="es")
                         transcription = result.get("text", "").strip()
                         if transcription:
                             # Append the local transcription to the message text
-                            msg["text"] = f"{msg['text']} [Nota de voz transcrita localmente: {transcription}]"
+                            msg["text"] = (
+                                f"{msg['text']} [Nota de voz transcrita localmente: {transcription}]"
+                            )
                             transcribed_count += 1
                             print(f"✅ Transcripción: '{transcription}'")
                     except Exception as e:
@@ -869,7 +880,9 @@ def log_execution_to_spreadsheet(
     Returns:
         A dictionary indicating success and the spreadsheet ID.
     """
-    print(f"📊 Registrando ejecución en la hoja de cálculo para el archivo ID: {file_id}")
+    print(
+        f"📊 Registrando ejecución en la hoja de cálculo para el archivo ID: {file_id}"
+    )
     creds = get_google_credentials()
     drive_service = build("drive", "v3", credentials=creds)
     sheets_service = build("sheets", "v4", credentials=creds)
@@ -877,9 +890,7 @@ def log_execution_to_spreadsheet(
     # 1. Get file metadata to find parent folder and name
     try:
         file_metadata = (
-            drive_service.files()
-            .get(fileId=file_id, fields="parents, name")
-            .execute()
+            drive_service.files().get(fileId=file_id, fields="parents, name").execute()
         )
     except Exception as e:
         print(f"❌ Error al consultar Drive para el archivo {file_id}: {e}")
@@ -899,7 +910,9 @@ def log_execution_to_spreadsheet(
             f"mimeType='application/vnd.google-apps.spreadsheet' and "
             f"'{parent_id}' in parents and trashed=false"
         )
-        sheet_results = drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        sheet_results = (
+            drive_service.files().list(q=sheet_query, fields="files(id)").execute()
+        )
         sheet_files = sheet_results.get("files", [])
         if sheet_files:
             sheet_id = sheet_files[0]["id"]
